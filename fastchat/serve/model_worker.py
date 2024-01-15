@@ -9,6 +9,7 @@ import os
 from typing import List, Optional
 import uuid
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from transformers import set_seed
@@ -260,6 +261,94 @@ class ModelWorker(BaseModelWorker):
             }
         return ret
 
+    def get_intentions(self, params):
+        self.call_ct += 1
+
+        try:
+            tokenizer = self.tokenizer
+
+            model_type_dict = {
+                'is_bert': 'bert' in str(type(self.model)),
+            }
+            line = params['input']
+            # {'input_ids', 'attention_mask', 'token_type_ids'}
+            inputs = tokenizer(line, return_tensors='pt').to(self.device)
+            inputs['intent_label_ids'] = None
+            inputs['slot_labels_ids'] = None
+            outputs = self.model(**inputs)
+            _, (intent_logits, slot_logits) = outputs[:2]
+
+            # Intent prediction
+            intent_preds = intent_logits.detach().cpu().numpy()
+            intent_preds = np.argmax(intent_preds, axis=1)
+
+            # Slot prediction
+            if self.model.use_crf:
+                slot_preds = np.array(self.model.crf.decode(slot_logits))
+            else:
+                slot_preds = slot_logits.detach().cpu().numpy()
+                slot_preds = np.argmax(slot_preds, axis=2)
+
+            intent_label_lst = self.model.intent_label_lst
+            slot_label_lst = self.model.slot_label_lst
+            slot_label_map = {i: label for i, label in enumerate(slot_label_lst)}
+            slot_preds_list = [[] for _ in range(slot_preds.shape[0])]
+
+            for i in range(slot_preds.shape[0]):
+                for j in range(slot_preds.shape[1]):
+                    slot_preds_list[i].append(slot_label_map[slot_preds[i][j]])
+            text = json.dumps({
+                'intent': intent_label_lst[intent_preds[0]],
+                'slots': slot_preds_list,
+            })
+            ret = {
+                'text': text,
+                'error_code': 0,
+            }
+        except torch.cuda.OutOfMemoryError as e:
+            ret = {
+                "text": f"{SERVER_ERROR_MSG}\n\n({e})",
+                "error_code": ErrorCode.CUDA_OUT_OF_MEMORY,
+            }
+        except (ValueError, RuntimeError) as e:
+            ret = {
+                "text": f"{SERVER_ERROR_MSG}\n\n({e})",
+                "error_code": ErrorCode.INTERNAL_ERROR,
+            }
+        return ret
+
+    def get_similarities(self, params):
+        self.call_ct += 1
+
+        try:
+            tokenizer = self.tokenizer
+            bert_model = self.model.bert
+            query_keys = params['query_keys']
+            inputs = tokenizer(query_keys, padding=True, return_tensors='pt').to(self.device)
+            outputs = bert_model(**inputs)
+            embeds = outputs[-1]
+            query_embed = embeds[0]
+            key_embeds = embeds[1:]
+            sims = torch.matmul(key_embeds, query_embed).detach().cpu().numpy().tolist()
+            text = json.dumps({
+                'similarities': sims,
+            })
+            ret = {
+                'text': text,
+                'error_code': 0,
+            }
+        except torch.cuda.OutOfMemoryError as e:
+            ret = {
+                "text": f"{SERVER_ERROR_MSG}\n\n({e})",
+                "error_code": ErrorCode.CUDA_OUT_OF_MEMORY,
+            }
+        except (ValueError, RuntimeError) as e:
+            ret = {
+                "text": f"{SERVER_ERROR_MSG}\n\n({e})",
+                "error_code": ErrorCode.INTERNAL_ERROR,
+            }
+        return ret
+
 
 def create_model_worker():
     parser = argparse.ArgumentParser()
@@ -376,6 +465,7 @@ if __name__ == "__main__":
     if args.ssl:
         uvicorn.run(
             app,
+            headers=[('Access-Control-Allow-Origin', '*')],
             host=args.host,
             port=args.port,
             log_level="info",
@@ -383,4 +473,10 @@ if __name__ == "__main__":
             ssl_certfile=os.environ["SSL_CERTFILE"],
         )
     else:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        uvicorn.run(
+            app,
+            headers=[('Access-Control-Allow-Origin', '*')],
+            host=args.host,
+            port=args.port,
+            log_level="info",
+        )

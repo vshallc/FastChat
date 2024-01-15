@@ -1383,6 +1383,8 @@ class BaichuanAdapter(BaseModelAdapter):
             low_cpu_mem_usage=True,
             **from_pretrained_kwargs,
         )
+        # FastChat 默认不支持4bits量化，如有需要直接开启下面代码使用Baichuan2的自带4bits量化
+        # model = model.quantize(4)
         return model, tokenizer
 
     def get_default_conv_template(self, model_path: str) -> Conversation:
@@ -2103,6 +2105,36 @@ class SolarAdapter(BaseModelAdapter):
         return get_conv_template("solar")
 
 
+class JointBertAdapter(BaseModelAdapter):
+    def match(self, model_path: str):
+        return 'jointbert' in model_path.lower()
+
+    def load_model(self, model_path: str, from_pretrained_kwards: dict):
+        from transformers import BertTokenizer
+        from intent_model import JointBERT
+
+        model_args = torch.load(os.path.join(model_path, 'training_args.bin'))
+        # get_intent_labels(args)
+        intent_label_lst = [label.strip() for label in open(os.path.join(model_path, 'intent_label.txt'), 'r', encoding='utf-8')]
+        # get_slot_labels(args)
+        slot_label_lst = [label.strip() for label in open(os.path.join(model_path, 'slot_label.txt'), 'r', encoding='utf-8')]
+
+        # load_model
+        model = JointBERT.from_pretrained(
+            model_path,
+            args=model_args,
+            intent_label_lst=intent_label_lst,
+            slot_label_lst=slot_label_lst,
+        )
+        # For prediction
+        model.intent_label_lst = intent_label_lst
+        model.slot_label_lst = slot_label_lst
+        # use_crf
+        model.use_crf = model_args.use_crf
+        # load_tokenizer
+        tokenizer = BertTokenizer.from_pretrained(model_args.model_name_or_path)
+        return model, tokenizer
+
 # Note: the registration order matters.
 # The one registered earlier has a higher matching priority.
 register_model_adapter(PeftModelAdapter)
@@ -2186,6 +2218,7 @@ register_model_adapter(DeepseekChatAdapter)
 register_model_adapter(MetaMathAdapter)
 register_model_adapter(BagelAdapter)
 register_model_adapter(SolarAdapter)
+register_model_adapter(JointBertAdapter)
 
 # After all adapters, try the default base adapter.
 register_model_adapter(BaseModelAdapter)

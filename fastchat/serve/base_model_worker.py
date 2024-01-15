@@ -173,6 +173,12 @@ class BaseModelWorker:
     def get_embeddings(self, params):
         raise NotImplementedError
 
+    def get_intentions(self, params):
+        raise NotImplementedError
+
+    def get_similarities(self, params):
+        raise NotImplementedError
+
 
 def release_worker_semaphore():
     worker.semaphore.release()
@@ -236,3 +242,13 @@ async def api_get_conv(request: Request):
 @app.post("/model_details")
 async def api_model_details(request: Request):
     return {"context_length": worker.context_len}
+
+@app.post('/worker_get_intention')
+async def api_get_intention(request: Request):
+    params = await request.json()
+    return worker.get_intentions(params)
+
+@app.post('/worker_get_similarities')
+async def api_get_similarities(request: Request):
+    params = await request.json()
+    return worker.get_similarities(params)
